@@ -31,7 +31,7 @@ type Bot struct {
 	tg          Sender
 	shop        *shop.Shop
 	st          *store.Store
-	admins      map[int64]bool
+	owners      map[int64]bool // ADMIN_IDS: can manage admins, never removable from the bot
 	botUsername string
 	log         *slog.Logger
 	now         func() time.Time
@@ -44,12 +44,38 @@ func New(tg Sender, sh *shop.Shop, admins []int64, botUsername string, log *slog
 		set[id] = true
 	}
 	return &Bot{
-		tg: tg, shop: sh, st: sh.Store, admins: set, botUsername: botUsername, log: log,
+		tg: tg, shop: sh, st: sh.Store, owners: set, botUsername: botUsername, log: log,
 		now: time.Now, sessions: newSessions(),
 	}
 }
 
-func (b *Bot) isAdmin(id int64) bool { return b.admins[id] }
+func (b *Bot) isOwner(id int64) bool { return b.owners[id] }
+
+// isAdmin covers both owners and the admins added from inside the bot. It is
+// read from the database on every check rather than cached, so removing an
+// admin takes effect on their very next tap.
+func (b *Bot) isAdmin(ctx context.Context, id int64) bool {
+	return b.owners[id] || b.st.IsAdmin(ctx, id)
+}
+
+// adminIDs is everyone who should receive receipts and alerts.
+func (b *Bot) adminIDs(ctx context.Context) []int64 {
+	seen := make(map[int64]bool, len(b.owners))
+	var ids []int64
+	for id := range b.owners {
+		seen[id] = true
+		ids = append(ids, id)
+	}
+	if extra, err := b.st.ListAdmins(ctx); err == nil {
+		for _, a := range extra {
+			if !seen[a.UserID] {
+				seen[a.UserID] = true
+				ids = append(ids, a.UserID)
+			}
+		}
+	}
+	return ids
+}
 
 // ReportInterrupted tells the admins about orders the last shutdown left
 // mid-delivery. They were already failed (and wallet payments refunded); a
@@ -91,7 +117,7 @@ func (b *Bot) customer(ctx context.Context, from models.User, referral string) (
 	if created && u.ReferredBy > 0 {
 		b.send(ctx, u.ReferredBy, txtReferralJoined(name), nil)
 	}
-	if u.IsBlocked && !b.isAdmin(u.ID) {
+	if u.IsBlocked && !b.isAdmin(ctx, u.ID) {
 		return u, false
 	}
 	return u, true
@@ -113,7 +139,7 @@ func (b *Bot) onMessage(ctx context.Context, m *models.Message) {
 		b.sessions.clear(u.ID)
 		b.sendMainMenu(ctx, u)
 		return
-	case text == "/admin" && b.isAdmin(u.ID):
+	case text == "/admin" && b.isAdmin(ctx, u.ID):
 		b.sessions.clear(u.ID)
 		b.adminHome(ctx, u.ID, 0)
 		return
@@ -155,7 +181,7 @@ func (b *Bot) onCallback(ctx context.Context, q *models.CallbackQuery) {
 	parts := strings.Split(q.Data, ":")
 
 	if parts[0] == "a" || parts[0] == "ok" || parts[0] == "no" {
-		if !b.isAdmin(u.ID) {
+		if !b.isAdmin(ctx, u.ID) {
 			// Menus are hidden from customers, but a crafted callback must
 			// still be refused on the server side.
 			b.answer(ctx, q.ID, txtNotAllowed, true)
@@ -211,7 +237,7 @@ func (b *Bot) answer(ctx context.Context, callbackID, text string, alert bool) {
 }
 
 func (b *Bot) notifyAdmins(ctx context.Context, text string, kb models.ReplyMarkup) {
-	for id := range b.admins {
+	for _, id := range b.adminIDs(ctx) {
 		b.send(ctx, id, text, kb)
 	}
 }
@@ -270,7 +296,7 @@ func (s *sessions) clear(userID int64) {
 // onInput routes typed text to whichever conversation is waiting for it.
 func (b *Bot) onInput(ctx context.Context, u store.User, s *session, text string) {
 	if strings.HasPrefix(s.step, "admin_") {
-		if !b.isAdmin(u.ID) {
+		if !b.isAdmin(ctx, u.ID) {
 			b.sessions.clear(u.ID)
 			return
 		}

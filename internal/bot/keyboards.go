@@ -99,18 +99,24 @@ func kbWallet() *models.InlineKeyboardMarkup {
 
 // ── admin ───────────────────────────────────────────────────────────────────
 
-func kbAdminHome(pending int64) *models.InlineKeyboardMarkup {
+func kbAdminHome(pending int64, isOwner bool) *models.InlineKeyboardMarkup {
 	reviewLabel := "🧾 رسیدهای در انتظار"
 	if pending > 0 {
 		reviewLabel = fmt.Sprintf("🧾 رسیدهای در انتظار (%d)", pending)
 	}
-	return kb(
+	rows := [][]models.InlineKeyboardButton{
 		row(btn(reviewLabel, "a:rev")),
 		row(btn("📦 پلن‌ها", "a:pl"), btn("🎟 کدهای تخفیف", "a:dc")),
 		row(btn("👤 مدیریت کاربر", "a:u"), btn("📊 آمار", "a:st")),
 		row(btn("⚙️ تنظیمات", "a:set"), btn("📣 پیام همگانی", "a:bc")),
-		row(btn("🏠 منوی اصلی", "m")),
-	)
+	}
+	// Only owners manage admins, so only owners see the button. The handler
+	// checks again - a hidden button is not a permission.
+	if isOwner {
+		rows = append(rows, row(btn("👮 مدیریت ادمین‌ها", "a:adm")))
+	}
+	rows = append(rows, row(btn("🏠 منوی اصلی", "m")))
+	return kb(rows...)
 }
 
 func kbReview(orderID int64) *models.InlineKeyboardMarkup {

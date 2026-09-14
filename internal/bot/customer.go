@@ -17,7 +17,7 @@ import (
 )
 
 func (b *Bot) sendMainMenu(ctx context.Context, u store.User) {
-	b.send(ctx, u.ID, txtWelcome(u.FirstName), kbMainMenu(b.isAdmin(u.ID), b.shop.TrialEnabled(ctx)))
+	b.send(ctx, u.ID, txtWelcome(u.FirstName), kbMainMenu(b.isAdmin(ctx, u.ID), b.shop.TrialEnabled(ctx)))
 }
 
 func id(parts []string, i int) int64 {
@@ -41,7 +41,7 @@ func (b *Bot) onCustomerCallback(ctx context.Context, u store.User, q *models.Ca
 	switch parts[0] {
 	case "m":
 		b.sessions.clear(u.ID)
-		b.show(ctx, u.ID, msgID, txtWelcome(u.FirstName), kbMainMenu(b.isAdmin(u.ID), b.shop.TrialEnabled(ctx)))
+		b.show(ctx, u.ID, msgID, txtWelcome(u.FirstName), kbMainMenu(b.isAdmin(ctx, u.ID), b.shop.TrialEnabled(ctx)))
 
 	case "buy":
 		b.showPlans(ctx, u, msgID, "p", txtChoosePlan)
@@ -223,7 +223,7 @@ func (b *Bot) onReceipt(ctx context.Context, u store.User, m *models.Message) {
 	b.send(ctx, u.ID, txtReceiptThanks, kbBackToMenu())
 
 	caption := b.reviewCaption(ctx, u, o)
-	for adminID := range b.admins {
+	for _, adminID := range b.adminIDs(ctx) {
 		if _, err := b.tg.SendPhoto(ctx, &tgbot.SendPhotoParams{
 			ChatID: adminID, Photo: &models.InputFileString{Data: fileID},
 			Caption: caption, ParseMode: models.ParseModeHTML, ReplyMarkup: kbReview(o.ID),

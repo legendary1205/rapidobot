@@ -312,3 +312,102 @@ func TestFormatHelpers(t *testing.T) {
 		t.Errorf("usageBar = %q", got)
 	}
 }
+
+const helperID int64 = 4000
+
+func TestOwnerAddsAnAdminWhoCanThenReviewReceipts(t *testing.T) {
+	f := newFixture(t)
+	f.text(helperID, "/start") // the new admin has opened the bot
+	f.text(adminID, "/start")
+	f.tap(adminID, "a:admadd")
+	f.text(adminID, strconv.FormatInt(helperID, 10))
+
+	if !f.st.IsAdmin(f.ctx, helperID) {
+		t.Fatal("owner's add did not grant admin rights")
+	}
+
+	// A customer now buys; the new admin must receive the receipt too.
+	f.text(customerID, "/start")
+	f.tap(customerID, "p:1")
+	o := f.latestOrder(customerID)
+	f.tap(customerID, "pc:"+itoa(o.ID))
+	f.photo(customerID)
+	if len(f.rec.photos[helperID]) != 1 {
+		t.Fatalf("added admin received %d receipts, want 1", len(f.rec.photos[helperID]))
+	}
+
+	// ...and approve it.
+	f.tap(helperID, "ok:"+itoa(o.ID))
+	if got, _ := f.st.GetOrder(f.ctx, o.ID); got.Status != store.StatusCompleted {
+		t.Errorf("order status after the added admin approved = %s, want completed", got.Status)
+	}
+}
+
+func TestAddedAdminCannotManageAdmins(t *testing.T) {
+	f := newFixture(t)
+	f.text(helperID, "/start")
+	if _, err := f.st.AddAdmin(f.ctx, helperID, adminID); err != nil {
+		t.Fatal(err)
+	}
+	const outsider int64 = 5000
+	f.text(outsider, "/start")
+
+	// Every admin-management action, crafted directly since the button is hidden.
+	f.tap(helperID, "a:admadd")
+	f.text(helperID, strconv.FormatInt(outsider, 10))
+	if f.st.IsAdmin(f.ctx, outsider) {
+		t.Error("an added admin was able to create another admin")
+	}
+
+	other := int64(6000)
+	f.st.AddAdmin(f.ctx, other, adminID)
+	f.tap(helperID, "a:admdel:"+strconv.FormatInt(other, 10))
+	if !f.st.IsAdmin(f.ctx, other) {
+		t.Error("an added admin was able to remove another admin")
+	}
+
+	// And they never see the button.
+	if strings.Contains(f.rec.allText(helperID), "مدیریت ادمین‌ها") {
+		t.Error("the admin-management screen was shown to a non-owner")
+	}
+}
+
+func TestRemovedAdminLosesAccessImmediately(t *testing.T) {
+	f := newFixture(t)
+	f.text(helperID, "/start")
+	f.st.AddAdmin(f.ctx, helperID, adminID)
+
+	f.text(adminID, "/start")
+	f.tap(adminID, "a:admdel:"+strconv.FormatInt(helperID, 10))
+	if f.st.IsAdmin(f.ctx, helperID) {
+		t.Fatal("owner could not remove the admin")
+	}
+
+	// Their very next admin action must be refused.
+	f.text(customerID, "/start")
+	f.tap(customerID, "p:1")
+	o := f.latestOrder(customerID)
+	f.tap(customerID, "pc:"+itoa(o.ID))
+	f.photo(customerID)
+	f.tap(helperID, "ok:"+itoa(o.ID))
+	if got, _ := f.st.GetOrder(f.ctx, o.ID); got.Status != store.StatusAwaitingReview {
+		t.Errorf("a removed admin still approved an order (status %s)", got.Status)
+	}
+	if len(f.rec.photos[helperID]) != 0 {
+		t.Error("a removed admin still receives receipts")
+	}
+}
+
+func TestOwnersCannotBeAddedOrRemovedFromTheBot(t *testing.T) {
+	f := newFixture(t)
+	f.text(adminID, "/start")
+	f.tap(adminID, "a:admadd")
+	f.text(adminID, strconv.FormatInt(adminID, 10)) // try to add an owner as a plain admin
+	if f.st.IsAdmin(f.ctx, adminID) {
+		t.Error("an owner was stored as a removable admin")
+	}
+	f.tap(adminID, "a:admdel:"+strconv.FormatInt(adminID, 10))
+	if !f.bot.isAdmin(f.ctx, adminID) {
+		t.Error("an owner lost admin rights from inside the bot")
+	}
+}

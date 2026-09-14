@@ -26,7 +26,7 @@ func (b *Bot) adminHome(ctx context.Context, adminID int64, msgID int) {
 	if !b.shop.CardConfigured(ctx) {
 		text += "\n\n⚠️ <b>شماره کارت تنظیم نشده</b> - تا تنظیم نشود هیچ مشتری‌ای نمی‌تواند پرداخت کند."
 	}
-	b.show(ctx, adminID, msgID, text, kbAdminHome(st.PendingReview))
+	b.show(ctx, adminID, msgID, text, kbAdminHome(st.PendingReview, b.isOwner(adminID)))
 }
 
 func (b *Bot) onAdminCallback(ctx context.Context, admin store.User, q *models.CallbackQuery, parts []string, msgID int) {
@@ -116,7 +116,7 @@ func (b *Bot) onAdminCallback(ctx context.Context, admin store.User, q *models.C
 		}
 		b.showUserCard(ctx, admin.ID, msgID, id(parts, 2))
 	case "ub": // toggle block
-		if u, err := b.st.GetUser(ctx, id(parts, 2)); err == nil && !b.isAdmin(u.ID) {
+		if u, err := b.st.GetUser(ctx, id(parts, 2)); err == nil && !b.isAdmin(ctx, u.ID) {
 			_ = b.st.SetBlocked(ctx, u.ID, !u.IsBlocked)
 		}
 		b.showUserCard(ctx, admin.ID, msgID, id(parts, 2))
@@ -137,6 +137,35 @@ func (b *Bot) onAdminCallback(ctx context.Context, admin store.User, q *models.C
 		s.fields["key"] = key
 		b.show(ctx, admin.ID, msgID, fmt.Sprintf("✏️ مقدار جدید «%s» را بفرستید.\nمقدار فعلی: <code>%s</code>\nبرای خالی‌کردن <code>-</code> بفرستید. انصراف /cancel",
 			settingLabels[key], esc(b.shop.Setting(ctx, key))), nil)
+
+	case "adm", "admadd", "admdel":
+		// Server-side, not just a hidden button: an admin added from the bot
+		// must never be able to add more admins or remove anyone.
+		if !b.isOwner(admin.ID) {
+			answer(txtOwnersOnly, true)
+			return
+		}
+		switch action {
+		case "adm":
+			b.listAdmins(ctx, admin.ID, msgID)
+		case "admadd":
+			b.sessions.start(admin.ID, "admin_add_admin")
+			b.show(ctx, admin.ID, msgID, "👮 <b>افزودن ادمین</b>\n\nآیدی عددی تلگرام شخص را بفرستید.\n"+
+				"او باید قبلاً ربات را استارت کرده باشد تا پیام‌ها به دستش برسد.\nبرای انصراف /cancel", nil)
+		case "admdel":
+			target := id(parts, 2)
+			removed, err := b.st.RemoveAdmin(ctx, target)
+			switch {
+			case err != nil:
+				answer(txtSomethingWent, true)
+			case removed:
+				answer("✅ دسترسی ادمین برداشته شد.", false)
+				b.send(ctx, target, "ℹ️ دسترسی مدیریت شما در این ربات برداشته شد.", nil)
+			default:
+				answer("این کاربر ادمین نبود.", true)
+			}
+			b.listAdmins(ctx, admin.ID, msgID)
+		}
 
 	case "bc":
 		b.sessions.start(admin.ID, "admin_broadcast")
@@ -543,6 +572,36 @@ func (b *Bot) onAdminInput(ctx context.Context, admin store.User, s *session, te
 		b.send(ctx, admin.ID, "✅ ذخیره شد.", nil)
 		b.listSettings(ctx, admin, 0)
 
+	case "admin_add_admin":
+		if !b.isOwner(admin.ID) {
+			b.sessions.clear(admin.ID)
+			return
+		}
+		target, ok := parseAmount(text)
+		if !ok || target <= 0 {
+			b.send(ctx, admin.ID, "⚠️ فقط آیدی عددی بفرستید، مثلاً <code>123456789</code>.\n(یوزرنیم مثل @name قابل استفاده نیست.)", nil)
+			return
+		}
+		b.sessions.clear(admin.ID)
+		if b.isOwner(target) {
+			b.send(ctx, admin.ID, "ℹ️ این شخص مالک ربات است و از قبل همه‌ی دسترسی‌ها را دارد.", nil)
+			b.listAdmins(ctx, admin.ID, 0)
+			return
+		}
+		added, err := b.st.AddAdmin(ctx, target, admin.ID)
+		switch {
+		case err != nil:
+			b.send(ctx, admin.ID, txtSomethingWent, nil)
+		case !added:
+			b.send(ctx, admin.ID, "ℹ️ این شخص از قبل ادمین است.", nil)
+		default:
+			b.send(ctx, admin.ID, fmt.Sprintf("✅ <code>%d</code> ادمین شد.", target), nil)
+			if b.send(ctx, target, "👮 شما به‌عنوان <b>ادمین</b> این ربات اضافه شدید.\nبرای ورود به پنل مدیریت /admin را بزنید.", nil) == nil {
+				b.send(ctx, admin.ID, "⚠️ پیام به او نرسید - احتمالاً هنوز ربات را استارت نکرده. دسترسی ثبت شد و با اولین /start فعال است.", nil)
+			}
+		}
+		b.listAdmins(ctx, admin.ID, 0)
+
 	case "admin_broadcast":
 		s.fields["text"] = text
 		s.step = "admin_broadcast_confirm"
@@ -574,4 +633,46 @@ func (b *Bot) broadcast(ctx context.Context, adminID int64, text string) {
 		time.Sleep(40 * time.Millisecond)
 	}
 	b.send(ctx, adminID, fmt.Sprintf("📣 ارسال تمام شد.\n✅ موفق: %d\n❌ ناموفق (ربات را بلاک کرده‌اند): %d", sent, failed), kbAdminBack())
+}
+
+// ── admins ──────────────────────────────────────────────────────────────────
+
+func (b *Bot) listAdmins(ctx context.Context, ownerID int64, msgID int) {
+	text := "👮 <b>مدیریت ادمین‌ها</b>\n\n🔒 <b>مالک‌ها</b> (از فایل تنظیمات، از داخل ربات قابل حذف نیستند):"
+	for id := range b.owners {
+		text += fmt.Sprintf("\n• <code>%d</code>%s", id, b.nameOf(ctx, id))
+	}
+
+	admins, err := b.st.ListAdmins(ctx)
+	var rows [][]models.InlineKeyboardButton
+	text += "\n\n👮 <b>ادمین‌ها</b> (همه‌ی دسترسی‌ها به‌جز مدیریت ادمین‌ها):"
+	if err != nil || len(admins) == 0 {
+		text += "\nهنوز ادمینی اضافه نشده."
+	}
+	for _, a := range admins {
+		label := fmt.Sprint(a.UserID)
+		if a.Username != "" {
+			label = "@" + a.Username
+		} else if a.FirstName != "" {
+			label = a.FirstName
+		}
+		text += fmt.Sprintf("\n• <code>%d</code>%s", a.UserID, b.nameOf(ctx, a.UserID))
+		rows = append(rows, row(btn("🗑 حذف "+label, fmt.Sprintf("a:admdel:%d", a.UserID))))
+	}
+	rows = append(rows, row(btn("➕ افزودن ادمین", "a:admadd")), row(btn("🔙 پنل مدیریت", "a")))
+	b.show(ctx, ownerID, msgID, text, kb(rows...))
+}
+
+// nameOf renders " - name (@username)" for someone who has opened the bot,
+// or nothing for an id the bot has never seen.
+func (b *Bot) nameOf(ctx context.Context, id int64) string {
+	u, err := b.st.GetUser(ctx, id)
+	if err != nil {
+		return " <i>(هنوز ربات را استارت نکرده)</i>"
+	}
+	s := " - " + esc(u.FirstName)
+	if u.Username != "" {
+		s += " (@" + esc(u.Username) + ")"
+	}
+	return s
 }
