@@ -102,15 +102,31 @@ write_env() {
     ask PANEL_PASSWORD "Panel sudo admin password" secret
 
     umask 077
-    cat > "$APP_DIR/.env" <<EOF
-BOT_TOKEN=${BOT_TOKEN}
-ADMIN_IDS=${ADMIN_IDS}
-PANEL_URL=${PANEL_URL%/}
-PANEL_USERNAME=${PANEL_USERNAME}
-PANEL_PASSWORD=${PANEL_PASSWORD}
-LOG_LEVEL=info
-EOF
+    {
+        echo "# Values are single-quoted on purpose: docker compose expands \$NAME inside"
+        echo "# unquoted and double-quoted env_file values, which silently corrupts any"
+        echo "# password containing a dollar sign. Keep the quotes if you edit these."
+        echo "BOT_TOKEN=$(env_value "$BOT_TOKEN")"
+        echo "ADMIN_IDS=$(env_value "$ADMIN_IDS")"
+        echo "PANEL_URL=$(env_value "${PANEL_URL%/}")"
+        echo "PANEL_USERNAME=$(env_value "$PANEL_USERNAME")"
+        echo "PANEL_PASSWORD=$(env_value "$PANEL_PASSWORD")"
+        echo "LOG_LEVEL=info"
+    } > "$APP_DIR/.env"
     ok "Settings written to $APP_DIR/.env"
+}
+
+# env_value encodes a value for docker compose's env_file. Verified against
+# compose itself rather than assumed: an unquoted or double-quoted `a$b` reaches
+# the container as `a` (compose expands $b to nothing), while a single-quoted
+# value arrives byte for byte - dollar, space, # and " included. A value that
+# itself contains a single quote cannot be single-quoted, so for that one case
+# each $ is doubled instead, which compose turns back into a literal $.
+env_value() {
+    case "$1" in
+        *"'"*) printf '%s' "${1//\$/\$\$}" ;;
+        *)     printf "'%s'" "$1" ;;
+    esac
 }
 
 fetch_files() {
