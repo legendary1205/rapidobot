@@ -1,0 +1,20 @@
+services:
+  bot:
+    image: ghcr.io/legendary1205/rapidobot:latest
+    container_name: rapidobot
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      # A named volume, not a bind mount: Docker creates it owned by the
+      # image's non-root user, where a host directory would be root-owned
+      # and the bot could not write its database.
+      - rapidobot-data:/data
+    logging:
+      # Unbounded json logs are what fills a VPS disk months later.
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  rapidobot-data:
