@@ -1,0 +1,5 @@
+# Shell scripts and everything that runs inside a Linux container must keep
+# LF endings no matter which OS committed them: a CRLF shebang makes bash look
+# for an interpreter literally named "bash" and the script never starts.
+* text=auto eol=lf
+*.png binary
